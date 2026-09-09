@@ -28,6 +28,7 @@ def main():
     conn.commit()
 
     failed_stage = detail = None
+    pushed_success = False
     try:
         for name, fn in STAGES:
             with metrics.timed(name):
@@ -36,6 +37,7 @@ def main():
         metrics.last_success.set(time.time())
         metrics.run_failed.set(0)
         status = "ok"
+        pushed_success = True
     except Exception as exc:
         conn.rollback()
         failed_stage = name
@@ -53,6 +55,8 @@ def main():
         conn.commit()
         try:
             metrics.push()
+            if pushed_success:
+                metrics.push_success()
         except Exception as exc:                       # noqa: BLE001
             # A dead gateway must not turn a good run into a failed one, but it
             # must be loud, because from here on the dashboards are lying.

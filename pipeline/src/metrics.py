@@ -32,14 +32,22 @@ from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 from . import config
 
+# Two registries, pushed under two grouping keys, because they have different
+# lifetimes. Everything about the current run belongs in `registry` and is
+# replaced wholesale each time. The liveness timestamp must survive a failed
+# run: a push replaces the whole group, so a failure that pushed a
+# default-zero `last_success` would erase the real one and the dashboard would
+# read "since last successful run: 56.7 years". Separate group, only written
+# on success, never zeroed.
 registry = CollectorRegistry()
+liveness = CollectorRegistry()
 
 # --- liveness ---------------------------------------------------------------
 # Goes stale when the job stops running at all, which is the outage no failure
 # signal can see, because a job that never starts never fails.
 last_success = Gauge(
     "pipeline_last_success_timestamp_seconds",
-    "Unix time of the last run where every stage succeeded", registry=registry)
+    "Unix time of the last run where every stage succeeded", registry=liveness)
 
 # --- data freshness ---------------------------------------------------------
 # A different question from liveness. The job can succeed on schedule all week
@@ -116,5 +124,12 @@ def timed(stage):
 
 
 def push():
-    """One push at the end. Grouped by job, so a rerun replaces rather than appends."""
-    push_to_gateway(config.PUSHGATEWAY, job=config.JOB, registry=registry)
+    """Per-run metrics. Replaces the previous run's group, which is the point."""
+    push_to_gateway(config.PUSHGATEWAY, job=config.JOB,
+                    grouping_key={"part": "run"}, registry=registry)
+
+
+def push_success():
+    """Only called when every stage finished. Never called on a failure."""
+    push_to_gateway(config.PUSHGATEWAY, job=config.JOB,
+                    grouping_key={"part": "liveness"}, registry=liveness)
