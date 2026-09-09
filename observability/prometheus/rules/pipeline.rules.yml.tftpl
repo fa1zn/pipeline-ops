@@ -1,0 +1,88 @@
+groups:
+  - name: pipeline
+    interval: ${scrape_interval}
+    rules:
+
+      # Job liveness. A failure counter cannot see a job that never started, so
+      # the primary alert is a timestamp going stale rather than an error going
+      # up. This is the one that catches a broken scheduler, a full disk, or a
+      # container that will not pull.
+      - alert: PipelineStale
+        expr: time() - pipeline_last_success_timestamp_seconds > ${stale_after_seconds}
+        for: ${alert_for}
+        labels:
+          severity: page
+        annotations:
+          summary: "No successful pipeline run in over ${stale_after_human}"
+          description: >-
+            Last success was {{ $value | humanizeDuration }} ago. The run may be
+            failing, or it may not be starting at all. Check the scheduler before
+            the job.
+
+      # The metric has never arrived. Distinct from stale: stale means it ran and
+      # stopped, absent means this Prometheus has never seen the job at all,
+      # which usually points at the push path rather than the pipeline.
+      - alert: PipelineMetricsAbsent
+        expr: absent(pipeline_last_success_timestamp_seconds)
+        for: ${alert_for}
+        labels:
+          severity: page
+        annotations:
+          summary: "Pipeline has never reported a successful run"
+          description: >-
+            Prometheus has no pipeline_last_success_timestamp_seconds series.
+            Either the job has never run or it cannot reach the pushgateway.
+
+      # Data freshness, which is not the same question as job liveness. A run
+      # can succeed on schedule for a week while upstream is dead, and every
+      # other signal here would stay green.
+      - alert: PipelineDataStale
+        expr: pipeline_watermark_lag_seconds > ${data_stale_after_seconds}
+        for: ${alert_for}
+        labels:
+          severity: page
+        annotations:
+          summary: "Newest ingested row is older than ${data_stale_after_human}"
+          description: >-
+            Watermark lag is {{ $value | humanizeDuration }}. The pipeline is
+            running and succeeding; upstream is what stopped.
+
+      # `and on(stage)` is doing real work here. Matching on success == 0 alone
+      # pages for every stage behind the broken one, because a stage that never
+      # started looks exactly like a stage that raised.
+      - alert: PipelineStageFailed
+        expr: pipeline_stage_success == 0 and on(stage) pipeline_stage_ran == 1
+        for: 0s
+        labels:
+          severity: page
+        annotations:
+          summary: "Stage {{ $labels.stage }} failed"
+          description: "Check run_log for the failed run and its detail column."
+
+      # Not a failure. The run produced correct output and took longer than its
+      # budget, which is worth knowing before it becomes a timeout.
+      - alert: PipelineStageOverBudget
+        expr: pipeline_stage_over_budget > 0
+        for: ${alert_for}
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Stage {{ $labels.stage }} ran over its time budget"
+          description: >-
+            {{ $labels.stage }} took
+            {{ with printf "pipeline_stage_duration_seconds{stage='%s'}" $labels.stage | query }}
+            {{ . | first | value | humanizeDuration }}{{ end }}.
+
+      # Who watches the watchman. Pushgateway holds every pipeline metric; if it
+      # dies, nothing above can fire, because the series simply stop updating at
+      # their last good value.
+      - alert: PushgatewayDown
+        expr: up{job="pushgateway"} == 0
+        for: ${alert_for}
+        labels:
+          severity: page
+        annotations:
+          summary: "Pushgateway is down, pipeline alerting is blind"
+          description: >-
+            Every pipeline alert depends on this target. Treat the pipeline as
+            unmonitored until it is back.

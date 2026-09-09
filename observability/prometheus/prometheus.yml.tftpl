@@ -1,0 +1,26 @@
+global:
+  scrape_interval: ${scrape_interval}
+  evaluation_interval: ${scrape_interval}
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # The job is short-lived, so Prometheus scrapes the gateway it pushed to
+  # rather than the job itself. honor_labels keeps the job's own `job` label
+  # instead of overwriting it with "pushgateway".
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+
+  # Meta-monitoring. If the gateway is down, every pipeline metric silently
+  # stops updating and the dashboards keep showing the last good values.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

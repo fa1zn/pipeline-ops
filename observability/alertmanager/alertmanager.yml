@@ -1,0 +1,39 @@
+route:
+  receiver: sink
+  group_by: [alertname]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 5m
+  routes:
+    - matchers: [severity = "ticket"]
+      receiver: sink
+      repeat_interval: 24h
+
+receivers:
+  - name: sink
+    webhook_configs:
+      - url: http://sink:8080/alert
+        send_resolved: true
+
+# Inhibition runs cause -> symptom, and getting the direction wrong is worse
+# than having no rule at all: it suppresses the alert that names what broke and
+# delivers the one that only says something is wrong.
+inhibit_rules:
+  # A dead gateway makes every pipeline series stop updating at its last good
+  # value, so everything derived from them is describing the past. Nothing below
+  # is trustworthy until this clears.
+  - source_matchers: [alertname = "PushgatewayDown"]
+    target_matchers:
+      - severity = "page"
+      - alertname !~ "PushgatewayDown|PipelineMetricsAbsent"
+
+  # A failed stage is why there has been no successful run. Page on the stage.
+  # The first version of this file had these two the other way round, which
+  # meant a drill delivered "no successful run in 2 minutes" and swallowed
+  # "transform failed".
+  - source_matchers: [alertname = "PipelineStageFailed"]
+    target_matchers: [alertname = "PipelineStale"]
+
+  # Stale data is the more specific statement when both are true.
+  - source_matchers: [alertname = "PipelineDataStale"]
+    target_matchers: [alertname = "PipelineStageOverBudget"]
